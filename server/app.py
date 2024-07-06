@@ -1,155 +1,78 @@
-#!/usr/bin/env python3
-from models import db, Restaurant, RestaurantPizza, Pizza
-from flask_migrate import Migrate
-from flask import Flask, request, jsonify
-from flask_restful import Api
-import os
+from flask_sqlalchemy import SQLAlchemy
+from sqlalchemy import MetaData
+from sqlalchemy.orm import validates
+from sqlalchemy.ext.associationproxy import association_proxy
+from sqlalchemy_serializer import SerializerMixin
 
-BASE_DIR = os.path.abspath(os.path.dirname(__file__))
-DATABASE = os.environ.get("DB_URI", f"sqlite:///{os.path.join(BASE_DIR, 'app.db')}")
-
-app = Flask(__name__)
-app.config["SQLALCHEMY_DATABASE_URI"] = DATABASE
-app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
-app.config["JSONIFY_PRETTYPRINT_REGULAR"] = False  
-
-migrate = Migrate(app, db)
-
-db.init_app(app)
-
-api = Api(app)
-
-@app.route("/")
-def index():
-    return "<h1>Code challenge</h1>"
-
-@app.route("/restaurants", methods=["GET"])
-def get_restaurants():
-    restaurants = Restaurant.query.all()
-    restaurants_data = [
-        {
-            "id": restaurant.id,
-            "name": restaurant.name,
-            "address": restaurant.address
-        } for restaurant in restaurants
-    ]
-    return jsonify(restaurants_data[:3]) 
-
-@app.route("/restaurants/<int:id>", methods=["GET"])
-def get_restaurant(id):
-    restaurant = Restaurant.query.filter_by(id=id).first()
-
-    if not restaurant:
-        return jsonify({"error": "Restaurant not found"}), 404
-
-    restaurant_data = {
-        "id": restaurant.id,
-        "name": restaurant.name,
-        "address": restaurant.address,
-        "restaurant_pizzas": []
+metadata = MetaData(
+    naming_convention={
+        "fk": "fk_%(table_name)s_%(column_0_name)s_%(referred_table_name)s",
     }
+)
 
-    for rp in restaurant.restaurant_pizzas:
-        pizza_data = {
-            "id": rp.id,
-            "pizza": {
-                "id": rp.pizza.id,
-                "name": rp.pizza.name,
-                "ingredients": rp.pizza.ingredients
-            },
-            "pizza_id": rp.pizza.id,
-            "price": rp.price,
-            "restaurant_id": rp.restaurant.id
-        }
-        restaurant_data["restaurant_pizzas"].append(pizza_data)
+db = SQLAlchemy(metadata=metadata)
 
-    return jsonify(restaurant_data)
 
-@app.route("/restaurants/<int:id>", methods=["DELETE"])
-def delete_restaurant(id):
-    restaurant = Restaurant.query.filter_by(id=id).first()
+class Restaurant(db.Model, SerializerMixin):
+    __tablename__ = "restaurants"
 
-    if not restaurant:
-        return jsonify({"error": "Restaurant not found"}), 404
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String)
+    address = db.Column(db.String)
 
-    RestaurantPizza.query.filter_by(restaurant_id=id).delete()
-    db.session.delete(restaurant)
-    db.session.commit()
+    # add relationship
+    restaurant_pizzas = db.relationship('RestaurantPizza', back_populates='restaurant', cascade="all, delete")
 
-    return '', 204
+    # add serialization rules
+    serialize_rules = ('-restaurant_pizzas.restaurant',)
 
-@app.route("/pizzas", methods=["GET"])
-def get_pizzas():
-    pizzas = Pizza.query.all()
-    pizzas_data = [
-        {
-            "id": pizza.id,
-            "ingredients": pizza.ingredients,
-            "name": pizza.name
-        } for pizza in pizzas
-    ]
-    return jsonify(pizzas_data)
+    restaurants = association_proxy('restaurant_pizzas', 'pizza', creator=lambda pizza_obj: RestaurantPizza(pizza=pizza_obj))
 
-@app.route("/restaurant_pizzas", methods=["POST"])
-def create_restaurant_pizza():
-    data = request.get_json()
-    
-    price = data.get("price")
-    pizza_id = data.get("pizza_id")
-    restaurant_id = data.get("restaurant_id")
+    def __repr__(self):
+        return f"<Restaurant {self.name}>"
 
-    errors = []
 
-    if price is None:
-        errors.append("Price is required.")
-    if pizza_id is None:
-        errors.append("Pizza ID is required.")
-    if restaurant_id is None:
-        errors.append("Restaurant ID is required.")
-    
-    if errors:
-        return jsonify({"errors": errors}), 400
+class Pizza(db.Model, SerializerMixin):
+    __tablename__ = "pizzas"
 
-    pizza = db.session.get(Pizza, pizza_id)
-    if not pizza:
-        errors.append(f"Pizza with ID {pizza_id} does not exist.")
-    
-    restaurant = db.session.get(Restaurant, restaurant_id)
-    if not restaurant:
-        errors.append(f"Restaurant with ID {restaurant_id} does not exist.")
-    
-    if errors:
-        return jsonify({"errors": errors}), 400
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String)
+    ingredients = db.Column(db.String)
 
-    try:
-        restaurant_pizza = RestaurantPizza(price=price, pizza_id=pizza_id, restaurant_id=restaurant_id)
-        db.session.add(restaurant_pizza)
-        db.session.commit()
-    except ValueError as e:
-        db.session.rollback()
-        return jsonify({"errors": [str(e)]}), 400
-    except Exception as e:
-        db.session.rollback()
-        return jsonify({"errors": ["An error occurred while creating the RestaurantPizza."]}), 500
+    # add relationship
+    restaurant_pizzas = db.relationship('RestaurantPizza', back_populates='pizza', cascade="all, delete")
 
-    response_data = {
-        "id": restaurant_pizza.id,
-        "pizza": {
-            "id": pizza.id,
-            "ingredients": pizza.ingredients,
-            "name": pizza.name
-        },
-        "pizza_id": restaurant_pizza.pizza_id,
-        "price": restaurant_pizza.price,
-        "restaurant": {
-            "address": restaurant.address,
-            "id": restaurant.id,
-            "name": restaurant.name
-        },
-        "restaurant_id": restaurant_pizza.restaurant_id
-    }
+    # add serialization rules
+    serialize_rules = ('-restaurant_pizzas.pizza',)
 
-    return jsonify(response_data), 201
+    pizzas = association_proxy('restaurant_pizzas', 'restaurant', creator=lambda restaurant_obj: RestaurantPizza(restaurant=restaurant_obj))
 
-if __name__ == "__main__":
-    app.run(port=5555, debug=True)
+    def __repr__(self):
+        return f"<Pizza {self.name}, {self.ingredients}>"
+
+
+class RestaurantPizza(db.Model, SerializerMixin):
+    __tablename__ = "restaurant_pizzas"
+
+    id = db.Column(db.Integer, primary_key=True)
+    price = db.Column(db.Integer, nullable=False)
+
+    # add relationships
+    pizza_id = db.Column(db.Integer, db.ForeignKey('pizzas.id'))
+    restaurant_id = db.Column(db.Integer, db.ForeignKey('restaurants.id'))
+
+    pizza = db.relationship('Pizza', back_populates='restaurant_pizzas')
+    restaurant = db.relationship('Restaurant', back_populates='restaurant_pizzas')
+
+    # add serialization rules
+    serialize_rules = ('-pizza.restaurant_pizzas', '-restaurant.restaurant_pizzas')
+
+    # add validation
+    @validates('price')
+    def validate_price(self, key, price):
+        if price < 1 or price > 30:
+            raise ValueError("Price must be between 1 and 30")
+        return price
+
+    def __repr__(self):
+        return f"<RestaurantPizza ${self.price}>"
