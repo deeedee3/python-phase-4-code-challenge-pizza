@@ -1,78 +1,104 @@
-from flask_sqlalchemy import SQLAlchemy
-from sqlalchemy import MetaData
-from sqlalchemy.orm import validates
-from sqlalchemy.ext.associationproxy import association_proxy
-from sqlalchemy_serializer import SerializerMixin
+#!/usr/bin/env python3
+from models import db, Restaurant, RestaurantPizza, Pizza
+from flask_migrate import Migrate
+from flask import Flask, request, make_response
+from flask_restful import Api, Resource
+import os
 
-metadata = MetaData(
-    naming_convention={
-        "fk": "fk_%(table_name)s_%(column_0_name)s_%(referred_table_name)s",
-    }
-)
+BASE_DIR = os.path.abspath(os.path.dirname(__file__))
+DATABASE = os.environ.get("DB_URI", f"sqlite:///{os.path.join(BASE_DIR, 'app.db')}")
 
-db = SQLAlchemy(metadata=metadata)
+app = Flask(__name__)
+app.config["SQLALCHEMY_DATABASE_URI"] = DATABASE
+app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+app.json.compact = False
 
+migrate = Migrate(app, db)
 
-class Restaurant(db.Model, SerializerMixin):
-    __tablename__ = "restaurants"
+db.init_app(app)
 
-    id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String)
-    address = db.Column(db.String)
-
-    # add relationship
-    restaurant_pizzas = db.relationship('RestaurantPizza', back_populates='restaurant', cascade="all, delete")
-
-    # add serialization rules
-    serialize_rules = ('-restaurant_pizzas.restaurant',)
-
-    restaurants = association_proxy('restaurant_pizzas', 'pizza', creator=lambda pizza_obj: RestaurantPizza(pizza=pizza_obj))
-
-    def __repr__(self):
-        return f"<Restaurant {self.name}>"
+api = Api(app)
 
 
-class Pizza(db.Model, SerializerMixin):
-    __tablename__ = "pizzas"
-
-    id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String)
-    ingredients = db.Column(db.String)
-
-    # add relationship
-    restaurant_pizzas = db.relationship('RestaurantPizza', back_populates='pizza', cascade="all, delete")
-
-    # add serialization rules
-    serialize_rules = ('-restaurant_pizzas.pizza',)
-
-    pizzas = association_proxy('restaurant_pizzas', 'restaurant', creator=lambda restaurant_obj: RestaurantPizza(restaurant=restaurant_obj))
-
-    def __repr__(self):
-        return f"<Pizza {self.name}, {self.ingredients}>"
+@app.route("/")
+def index():
+    return "<h1>Code challenge</h1>"
 
 
-class RestaurantPizza(db.Model, SerializerMixin):
-    __tablename__ = "restaurant_pizzas"
+@app.get("/restaurants")
+def get_restaurants():
+    restaurants = []
+    for restaurant in Restaurant.query.all():
+        restaurants.append(restaurant.to_dict(only=("address", "id", "name",)))
 
-    id = db.Column(db.Integer, primary_key=True)
-    price = db.Column(db.Integer, nullable=False)
+    body = restaurants
 
-    # add relationships
-    pizza_id = db.Column(db.Integer, db.ForeignKey('pizzas.id'))
-    restaurant_id = db.Column(db.Integer, db.ForeignKey('restaurants.id'))
+    return make_response(body, 200)
 
-    pizza = db.relationship('Pizza', back_populates='restaurant_pizzas')
-    restaurant = db.relationship('Restaurant', back_populates='restaurant_pizzas')
+@app.get("/restaurants/<int:id>")
+def get_restaurant(id):
+    restaurant = Restaurant.query.filter_by(id = id).first()
 
-    # add serialization rules
-    serialize_rules = ('-pizza.restaurant_pizzas', '-restaurant.restaurant_pizzas')
+    if restaurant:
+        body = restaurant.to_dict()
+        status = 200
+    else:
+        body = {"error": "Restaurant not found"}
+        status = 404
+    
+    return make_response(body, status)
 
-    # add validation
-    @validates('price')
-    def validate_price(self, key, price):
-        if price < 1 or price > 30:
-            raise ValueError("Price must be between 1 and 30")
-        return price
+@app.delete("/restaurants/<int:id>")
+def delete_restaurant(id):
+    restaurant = Restaurant.query.filter_by(id = id).first()
 
-    def __repr__(self):
-        return f"<RestaurantPizza ${self.price}>"
+    if restaurant:
+        body = {}
+        status = 204
+        db.session.delete(restaurant)
+        db.session.commit() 
+    else:
+        body = {"error": "Restaurant not found"}
+        status = 404
+    
+    return make_response(body, status)
+
+@app.get("/pizzas")
+def get_pizzas():
+    pizzas = []
+    for pizza in Pizza.query.all():
+        pizzas.append(pizza.to_dict(only=("id", "ingredients", "name", )))
+    
+    body = pizzas
+
+    return make_response(body, 200)
+
+
+
+@app.post("/restaurant_pizzas")
+def create():
+    data = request.get_json()
+    
+    if "price" not in data or "pizza_id" not in data or "restaurant_id" not in data:
+        body = {"error": "Missing required fields"}
+        status = 400
+    else:
+        try:
+            restaurant_pizza = RestaurantPizza(price=data["price"], pizza_id=data["pizza_id"], restaurant_id=data["restaurant_id"])
+            db.session.add(restaurant_pizza)
+            db.session.commit()
+            
+            body = restaurant_pizza.to_dict()
+            status = 201
+        except:
+            body = {"errors": ["validation errors"]}
+            status = 400
+    
+    return make_response(body, status)
+
+
+    
+    
+
+if __name__ == "__main__":
+    app.run(port=5555, debug=True)
